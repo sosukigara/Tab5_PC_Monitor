@@ -35,6 +35,13 @@ void setup() {
 }
 
 void loop() {
+  static uint32_t loopCount = 0;
+  loopCount++;
+  if (loopCount % 50000 == 0) {
+    M5.Display.setCursor(10, 100);
+    M5.Display.printf("Loops: %u, Serial Avail: %d    ", loopCount, Serial.available());
+  }
+
   // 1. Wait for sync header (0xAA, 0xBB, 0xCC, 0xDD)
   static const uint8_t SYNC_HEADER[] = {0xAA, 0xBB, 0xCC, 0xDD};
   uint8_t headerIndex = 0;
@@ -42,6 +49,8 @@ void loop() {
   while (headerIndex < 4) {
     if (Serial.available()) {
       uint8_t c = Serial.read();
+      M5.Display.setCursor(10, 130);
+      M5.Display.printf("Rx: 0x%02X, idx: %d   ", c, headerIndex);
       if (c == SYNC_HEADER[headerIndex]) {
         headerIndex++;
       } else {
