@@ -37,11 +37,18 @@ def main():
     try:
         # Timeout is set to 1.0s to avoid hanging if ACK is lost
         ser = serial.Serial(port, baudrate=115200, timeout=1.0)
+        # Standard configuration to enable communication on ESP32 USB-CDC
+        ser.dtr = True
+        ser.rts = True
     except Exception as e:
         print(f"Error opening serial port: {e}")
         sys.exit(1)
         
     print("Serial port opened successfully.")
+    print("Waiting 2.0 seconds for M5Stack to boot up...")
+    time.sleep(2.0)
+    ser.reset_input_buffer()
+    ser.reset_output_buffer()
     
     # Target resolution for M5Stack Tab5-P4
     WIDTH, HEIGHT = 1280, 720
