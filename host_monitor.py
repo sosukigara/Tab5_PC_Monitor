@@ -74,6 +74,8 @@ def main():
                         ready = True
                     elif line.startswith("D:"):
                         print(f"Device Trace: {line}")
+                    elif line:
+                        print(f"Device Output: {line}")
 
                 now = time.time()
                 elapsed = now - last_frame_time

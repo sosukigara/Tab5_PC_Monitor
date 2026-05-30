@@ -38,12 +38,10 @@ void setup() {
 }
 
 void loop() {
-  // Trace: Device is ready and waiting for host
-  Serial.println("D:READY");
-
   // 1. Wait for sync header (0xAA, 0xBB, 0xCC, 0xDD)
   static const uint8_t SYNC_HEADER[] = {0xAA, 0xBB, 0xCC, 0xDD};
   uint8_t headerIndex = 0;
+  uint32_t lastReadyTime = 0;
 
   while (headerIndex < 4) {
     if (Serial.available()) {
@@ -54,6 +52,12 @@ void loop() {
         headerIndex = (c == SYNC_HEADER[0]) ? 1 : 0;
       }
     } else {
+      // Broadcast READY signal periodically (every 500ms) to prevent deadlock
+      // if the host clears its buffer right after connecting.
+      if (millis() - lastReadyTime > 500) {
+        Serial.println("D:READY");
+        lastReadyTime = millis();
+      }
       // Yield to prevent Watchdog Timeout while waiting for host
       delay(1);
     }
