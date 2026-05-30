@@ -9,6 +9,7 @@ from serial.tools import list_ports
 import mss
 import cv2
 import numpy as np
+from turbojpeg import TurboJPEG, TJPF_BGR
 
 # Set up logging to file and console
 logger = logging.getLogger("HostMonitor")
@@ -26,8 +27,8 @@ logger.addHandler(ch)
 def parse_args():
     parser = argparse.ArgumentParser(description="M5Stack Tab5 Linux Mirror Monitor Host")
     parser.add_argument("--port", "-p", help="Serial port (e.g. /dev/ttyACM0 or COM4). Auto-detected if not specified.")
-    # Default quality reduced to 60 to keep JPEG size below 128KB for ESP32 SRAM constraints
-    parser.add_argument("--quality", "-q", type=int, default=60, help="JPEG compression quality (1-100, default 60)")
+    # Default quality increased to 75 as PyTurboJPEG is highly efficient and dual-core firmware handles parsing faster
+    parser.add_argument("--quality", "-q", type=int, default=75, help="JPEG compression quality (1-100, default 75)")
     parser.add_argument("--fps", "-f", type=int, default=30, help="Target maximum FPS (default 30)")
     return parser.parse_args()
 
@@ -51,6 +52,14 @@ def capture_thread_func(args):
     WIDTH, HEIGHT = 1280, 720
     frame_interval = 1.0 / args.fps
     
+    try:
+        jpeg = TurboJPEG()
+    except Exception as e:
+        logger.error(f"Failed to initialize TurboJPEG: {e}")
+        logger.error("Please install libturbojpeg (e.g., 'sudo apt-get install libturbojpeg0-dev')")
+        capture_running = False
+        return
+
     with mss.mss() as sct:
         # Get primary monitor info
         monitor = sct.monitors[1] # 1 is the primary monitor, 0 is the all-in-one virtual screen
@@ -70,19 +79,16 @@ def capture_thread_func(args):
             if img.shape[1] != WIDTH or img.shape[0] != HEIGHT:
                 img = cv2.resize(img, (WIDTH, HEIGHT), interpolation=cv2.INTER_LINEAR)
 
-            # OpenCV encode needs 3 channels, slice off Alpha channel if present
+            # TurboJPEG encode needs BGR or RGB without Alpha
             if img.shape[2] == 4:
                 img = img[:, :, :3]
 
-            # 4. Compress to JPEG
-            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), args.quality]
-            result, encimg = cv2.imencode('.jpg', img, encode_param)
-
-            if not result:
-                logger.error("Failed to encode JPEG frame.")
+            # 4. Compress to JPEG using highly optimized PyTurboJPEG
+            try:
+                jpeg_data = jpeg.encode(img, quality=args.quality, pixel_format=TJPF_BGR)
+            except Exception as e:
+                logger.error(f"Failed to encode JPEG frame: {e}")
                 continue
-
-            jpeg_data = encimg.tobytes()
 
             # Update shared variable safely
             with frame_lock:
@@ -151,6 +157,10 @@ def main():
                     # Get latest frame - block until first frame is ready to avoid dropping D:READY
                     jpeg_data = None
                     while jpeg_data is None:
+                        if not capture_running:
+                            logger.error("Capture thread is dead. Exiting application.")
+                            sys.exit(1)
+
                         with frame_lock:
                             jpeg_data = latest_jpeg_data
                         if not jpeg_data:
