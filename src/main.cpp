@@ -10,16 +10,19 @@ void setup() {
   auto cfg = M5.config();
   M5.begin(cfg);
 
-  // Set rotation if needed (Default should be correct for landscape)
-  M5.Display.setRotation(0);
+  // Set rotation to 1 (Landscape) so the 1280x720 frame fits correctly
+  M5.Display.setRotation(1);
   M5.Display.clear(TFT_BLACK);
 
-  // Try to allocate in internal SRAM explicitly
-  jpegBuffer = (uint8_t*)heap_caps_malloc(BUFFER_SIZE, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  // 1st priority: Try to allocate in PSRAM (SPIRAM) which has plenty of space
+  jpegBuffer = (uint8_t*)heap_caps_malloc(BUFFER_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   if (!jpegBuffer) {
-    // Fallback: The ESP32-P4 has 500KB internal SRAM, but continuous blocks might be fragmented.
-    // Try allocating a smaller buffer (128KB) or use PSRAM if absolutely necessary.
-    jpegBuffer = (uint8_t*)malloc(128 * 1024);
+    // 2nd priority: Fallback to internal SRAM if PSRAM is unavailable
+    jpegBuffer = (uint8_t*)heap_caps_malloc(BUFFER_SIZE, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  }
+  if (!jpegBuffer) {
+    // 3rd priority: Allocate whatever is available (minimum 150KB)
+    jpegBuffer = (uint8_t*)malloc(150 * 1024);
   }
 
   if (!jpegBuffer) {
@@ -29,15 +32,18 @@ void setup() {
     while(1) { delay(100); }
   }
 
+  // Expand the serial RX buffer to prevent USB CDC packet dropping during high-speed image transfer
+  Serial.setRxBufferSize(65536);
   // Native USB-CDC CDC-ACM ignores baudrate, but set high for compatibility
   Serial.begin(115200);
-  Serial.setTimeout(1000); // 1 second read timeout
+  Serial.setTimeout(3000); // Increased to 3 seconds to avoid timeout during chunked receiving
 }
 
 void loop() {
   // 1. Wait for sync header (0xAA, 0xBB, 0xCC, 0xDD)
   static const uint8_t SYNC_HEADER[] = {0xAA, 0xBB, 0xCC, 0xDD};
   uint8_t headerIndex = 0;
+  uint32_t lastReadyTime = 0;
 
   while (headerIndex < 4) {
     if (Serial.available()) {
@@ -48,6 +54,12 @@ void loop() {
         headerIndex = (c == SYNC_HEADER[0]) ? 1 : 0;
       }
     } else {
+      // Broadcast READY signal periodically (every 500ms) to prevent deadlock
+      // if the host clears its buffer right after connecting.
+      if (millis() - lastReadyTime > 500) {
+        Serial.println("D:READY");
+        lastReadyTime = millis();
+      }
       // Yield to prevent Watchdog Timeout while waiting for host
       delay(1);
     }
@@ -64,14 +76,26 @@ void loop() {
                          ((uint32_t)sizeBytes[2] << 8)  |
                          (uint32_t)sizeBytes[3];
 
-  // Validate payload size
-  if (payloadSize == 0 || payloadSize > BUFFER_SIZE || !jpegBuffer) {
-    // Write NACK (0x15) to notify the host of an error
-    Serial.write(0x15);
+  // Validate payload size and buffer
+  if (!jpegBuffer) {
+    Serial.write(0x15); // NACK
+    Serial.write(0xE1); // Error code: Buffer is NULL
     Serial.flush();
     while (Serial.available() > 0) { Serial.read(); }
     return;
   }
+  if (payloadSize == 0 || payloadSize > BUFFER_SIZE) {
+    Serial.write(0x15); // NACK
+    Serial.write(0xE2); // Error code: Payload size invalid or too large
+    Serial.flush();
+    while (Serial.available() > 0) { Serial.read(); }
+    return;
+  }
+
+  // Two-stage handshake: Tell the host we successfully processed the header/size
+  // and are now ready to stream the actual image data payload.
+  Serial.println("D:SYNC");
+  Serial.flush();
 
   // 3. Read JPEG payload bytes
   uint32_t bytesRead = 0;
@@ -80,6 +104,7 @@ void loop() {
     if (chunk == 0) {
       // Timeout occurred
       Serial.write(0x15); // NACK
+      Serial.write(0xE3); // Error code: Serial read timeout
       Serial.flush();
       while (Serial.available() > 0) { Serial.read(); }
       return;
