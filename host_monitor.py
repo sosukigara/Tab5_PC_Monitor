@@ -4,11 +4,11 @@ import time
 import argparse
 import logging
 import threading
-from io import BytesIO
 import serial
 from serial.tools import list_ports
-from PIL import Image
 import mss
+import cv2
+import numpy as np
 
 # Set up logging to file and console
 logger = logging.getLogger("HostMonitor")
@@ -62,17 +62,27 @@ def capture_thread_func(args):
             # 1. Capture screen
             screenshot = sct.grab(monitor)
 
-            # 2. Convert to PIL Image
-            img = Image.frombytes("RGB", screenshot.size, screenshot.bgra, "raw", "BGRX")
+            # 2. Convert to numpy array (OpenCV format)
+            # mss returns BGRA, OpenCV uses BGR natively
+            img = np.array(screenshot)
 
             # 3. Resize to Tab5 resolution
-            if img.size != (WIDTH, HEIGHT):
-                img = img.resize((WIDTH, HEIGHT), Image.Resampling.BILINEAR)
+            if img.shape[1] != WIDTH or img.shape[0] != HEIGHT:
+                img = cv2.resize(img, (WIDTH, HEIGHT), interpolation=cv2.INTER_LINEAR)
+
+            # OpenCV encode needs 3 channels, slice off Alpha channel if present
+            if img.shape[2] == 4:
+                img = img[:, :, :3]
 
             # 4. Compress to JPEG
-            buf = BytesIO()
-            img.save(buf, format="JPEG", quality=args.quality)
-            jpeg_data = buf.getvalue()
+            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), args.quality]
+            result, encimg = cv2.imencode('.jpg', img, encode_param)
+
+            if not result:
+                logger.error("Failed to encode JPEG frame.")
+                continue
+
+            jpeg_data = encimg.tobytes()
 
             # Update shared variable safely
             with frame_lock:
@@ -101,7 +111,7 @@ def main():
 
             if not port:
                 logger.info("No serial port found. Waiting for device...")
-                time.sleep(2.0)
+                time.sleep(0.5)
                 continue
 
             logger.info(f"Connecting to M5Stack on port: {port}...")
@@ -112,10 +122,10 @@ def main():
                 ser.dtr = True
                 ser.rts = True
             except Exception as e:
-                logger.error(f"Error opening serial port {port}: {e}. Retrying in 2 seconds...")
-                time.sleep(2.0)
+                logger.error(f"Error opening serial port {port}: {e}. Retrying in 0.5 seconds...")
+                time.sleep(0.5)
                 continue
-                
+
             logger.info("Serial port opened successfully.")
             logger.info("Waiting for M5Stack to boot and send D:READY signal...")
 
@@ -138,14 +148,13 @@ def main():
                     ser.reset_input_buffer()
                     ser.reset_output_buffer()
 
-                    # Get latest frame
-                    with frame_lock:
-                        jpeg_data = latest_jpeg_data
-
-                    if not jpeg_data:
-                        # If capture thread hasn't produced a frame yet
-                        time.sleep(0.01)
-                        continue
+                    # Get latest frame - block until first frame is ready to avoid dropping D:READY
+                    jpeg_data = None
+                    while jpeg_data is None:
+                        with frame_lock:
+                            jpeg_data = latest_jpeg_data
+                        if not jpeg_data:
+                            time.sleep(0.005)
 
                     # 5. Build packet
                     size = len(jpeg_data)
