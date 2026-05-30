@@ -2,11 +2,25 @@
 import sys
 import time
 import argparse
+import logging
 from io import BytesIO
 import serial
 from serial.tools import list_ports
 from PIL import Image
 import mss
+
+# Set up logging to file and console
+logger = logging.getLogger("HostMonitor")
+logger.setLevel(logging.DEBUG)
+fh = logging.FileHandler("host_monitor.log")
+fh.setLevel(logging.DEBUG)
+ch = logging.StreamHandler()
+ch.setLevel(logging.INFO)
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+fh.setFormatter(formatter)
+ch.setFormatter(formatter)
+logger.addHandler(fh)
+logger.addHandler(ch)
 
 def parse_args():
     parser = argparse.ArgumentParser(description="M5Stack Tab5 Linux Mirror Monitor Host")
@@ -31,10 +45,10 @@ def main():
     if not port:
         port = auto_detect_port()
         if not port:
-            print("Error: No serial port specified and auto-detection failed.")
+            logger.error("No serial port specified and auto-detection failed.")
             sys.exit(1)
             
-    print(f"Connecting to M5Stack on port: {port}...")
+    logger.info(f"Connecting to M5Stack on port: {port}...")
     try:
         # Timeout is set to 5.0s to avoid hanging if ACK is lost or device is slow
         ser = serial.Serial(port, baudrate=115200, timeout=5.0)
@@ -42,11 +56,11 @@ def main():
         ser.dtr = True
         ser.rts = True
     except Exception as e:
-        print(f"Error opening serial port: {e}")
+        logger.error(f"Error opening serial port: {e}")
         sys.exit(1)
         
-    print("Serial port opened successfully.")
-    print("Waiting for M5Stack to boot and send D:READY signal...")
+    logger.info("Serial port opened successfully.")
+    logger.info("Waiting for M5Stack to boot and send D:READY signal...")
     
     # Target resolution for M5Stack Tab5-P4
     WIDTH, HEIGHT = 1280, 720
@@ -59,7 +73,7 @@ def main():
     with mss.mss() as sct:
         # Get primary monitor info
         monitor = sct.monitors[1] # 1 is the primary monitor, 0 is the all-in-one virtual screen
-        print(f"Capturing monitor: {monitor}")
+        logger.info(f"Capturing monitor: {monitor}")
         
         last_frame_time = time.time()
         
@@ -69,13 +83,14 @@ def main():
                 ready = False
                 # Try reading until we hit the ready signal, to clear out garbage or catch traces
                 while not ready:
-                    line = ser.readline().decode('ascii', errors='ignore').strip()
+                    # Strip any hidden garbage characters like \x00 that might interfere with exact string matching
+                    line = ser.readline().decode('ascii', errors='ignore').replace('\x00', '').strip()
                     if line == "D:READY":
                         ready = True
                     elif line.startswith("D:"):
-                        print(f"Device Trace: {line}")
+                        logger.debug(f"Device Trace: {line}")
                     elif line:
-                        print(f"Device Output: {line}")
+                        logger.info(f"Device Output: {line}")
 
                 now = time.time()
                 elapsed = now - last_frame_time
@@ -105,12 +120,31 @@ def main():
                 
                 # 5. Build packet
                 size = len(jpeg_data)
-                print(f"Sending frame: size={size} bytes")
+                logger.info(f"Sending frame: size={size} bytes")
                 size_bytes = size.to_bytes(4, byteorder="big")
                 
-                # 6. Send packet
+                # 6. Send packet (Two-Stage Handshake)
+                # First, send header and size
                 ser.write(HEADER)
                 ser.write(size_bytes)
+                ser.flush()
+
+                # Wait for device to acknowledge header/size (D:SYNC)
+                sync_ok = False
+                while not sync_ok:
+                    line = ser.readline().decode('ascii', errors='ignore').replace('\x00', '').strip()
+                    if line == "D:SYNC":
+                        sync_ok = True
+                    elif line.startswith("D:"):
+                        logger.debug(f"Device Trace: {line}")
+                    elif line:
+                        logger.info(f"Device Output: {line}")
+                    if not line: # Timeout
+                        logger.warning("Timeout waiting for D:SYNC. Aborting frame.")
+                        break
+
+                if not sync_ok:
+                    continue
 
                 # Send large payload in chunks to prevent USB CDC buffer overflow / Errno 5
                 chunk_size = 4096
@@ -118,37 +152,47 @@ def main():
                     chunk = jpeg_data[i:i+chunk_size]
                     ser.write(chunk)
                     ser.flush()
-                
-                # 7. Wait for ACK (0x06)
-                ack = ser.read(1)
-                if not ack:
-                    # Timeout
-                    print("Warning: ACK timeout. Retrying...")
-                elif ack[0] == 0x06:
-                    # Success
-                    pass
-                elif ack[0] == 0x15:
-                    # NACK
-                    err_code = ser.read(1)
-                    if err_code:
-                        if err_code[0] == 0xE1:
-                            print("Warning: Received NACK. Error: M5Stack buffer allocation failed (NULL).")
-                        elif err_code[0] == 0xE2:
-                            print("Warning: Received NACK. Error: Frame size exceeds device buffer limit.")
-                        elif err_code[0] == 0xE3:
-                            print("Warning: Received NACK. Error: Device serial read timeout.")
+
+                # 7. Wait for final ACK (0x06)
+                while True:
+                    ack = ser.read(1)
+                    if not ack:
+                        # Timeout
+                        logger.warning("ACK timeout. Retrying...")
+                        break
+
+                    if ack[0] == 0x06:
+                        # Success
+                        break
+                    elif ack[0] == 0x15:
+                        # NACK
+                        err_code = ser.read(1)
+                        if err_code:
+                            if err_code[0] == 0xE1:
+                                logger.warning("Received NACK. Error: M5Stack buffer allocation failed (NULL).")
+                            elif err_code[0] == 0xE2:
+                                logger.warning("Received NACK. Error: Frame size exceeds device buffer limit.")
+                            elif err_code[0] == 0xE3:
+                                logger.warning("Received NACK. Error: Device serial read timeout.")
+                            else:
+                                logger.warning(f"Received NACK with unknown error code: {err_code}")
                         else:
-                            print(f"Warning: Received NACK with unknown error code: {err_code}")
+                            logger.warning("Received NACK without error code.")
+                        break
+                    elif ack == b'D':
+                        # Debug Trace String from M5Stack
+                        trace_msg = ser.readline().decode('ascii', errors='ignore').replace('\x00', '').strip()
+                        logger.debug(f"Device Trace: D{trace_msg}")
+                    elif ack == b'\r' or ack == b'\n':
+                        pass # Ignore rogue newlines
                     else:
-                        print("Warning: Received NACK without error code.")
-                else:
-                    print(f"Warning: Unexpected response from M5Stack: {ack}")
+                        logger.warning(f"Unexpected response from M5Stack: {ack}")
                     
         except KeyboardInterrupt:
-            print("\nStopping monitor host...")
+            logger.info("\nStopping monitor host...")
         finally:
             ser.close()
-            print("Serial port closed.")
+            logger.info("Serial port closed.")
 
 if __name__ == "__main__":
     main()

@@ -32,6 +32,8 @@ void setup() {
     while(1) { delay(100); }
   }
 
+  // Expand the serial RX buffer to prevent USB CDC packet dropping during high-speed image transfer
+  Serial.setRxBufferSize(65536);
   // Native USB-CDC CDC-ACM ignores baudrate, but set high for compatibility
   Serial.begin(115200);
   Serial.setTimeout(3000); // Increased to 3 seconds to avoid timeout during chunked receiving
@@ -89,6 +91,11 @@ void loop() {
     while (Serial.available() > 0) { Serial.read(); }
     return;
   }
+
+  // Two-stage handshake: Tell the host we successfully processed the header/size
+  // and are now ready to stream the actual image data payload.
+  Serial.println("D:SYNC");
+  Serial.flush();
 
   // 3. Read JPEG payload bytes
   uint32_t bytesRead = 0;
