@@ -96,7 +96,13 @@ def main():
                 # 6. Send packet
                 ser.write(HEADER)
                 ser.write(size_bytes)
-                ser.write(jpeg_data)
+
+                # Send large payload in chunks to prevent USB CDC buffer overflow / Errno 5
+                chunk_size = 4096
+                for i in range(0, len(jpeg_data), chunk_size):
+                    chunk = jpeg_data[i:i+chunk_size]
+                    ser.write(chunk)
+
                 ser.flush()
                 
                 # 7. Wait for ACK (0x06)
