@@ -11,7 +11,8 @@ import mss
 def parse_args():
     parser = argparse.ArgumentParser(description="M5Stack Tab5 Linux Mirror Monitor Host")
     parser.add_argument("--port", "-p", help="Serial port (e.g. /dev/ttyACM0 or COM4). Auto-detected if not specified.")
-    parser.add_argument("--quality", "-q", type=int, default=80, help="JPEG compression quality (1-100, default 80)")
+    # Default quality reduced to 60 to keep JPEG size below 128KB for ESP32 SRAM constraints
+    parser.add_argument("--quality", "-q", type=int, default=60, help="JPEG compression quality (1-100, default 60)")
     parser.add_argument("--fps", "-f", type=int, default=30, help="Target maximum FPS (default 30)")
     return parser.parse_args()
 
@@ -103,6 +104,9 @@ def main():
                 for i in range(0, len(jpeg_data), chunk_size):
                     chunk = jpeg_data[i:i+chunk_size]
                     ser.write(chunk)
+                    ser.flush()
+                    # Slight delay to allow ESP32 to process the chunk without timing out
+                    time.sleep(0.002)
 
                 ser.flush()
                 
