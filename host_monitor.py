@@ -105,10 +105,6 @@ def main():
                     chunk = jpeg_data[i:i+chunk_size]
                     ser.write(chunk)
                     ser.flush()
-                    # Slight delay to allow ESP32 to process the chunk without timing out
-                    time.sleep(0.002)
-
-                ser.flush()
                 
                 # 7. Wait for ACK (0x06)
                 ack = ser.read(1)
@@ -120,7 +116,18 @@ def main():
                     pass
                 elif ack[0] == 0x15:
                     # NACK
-                    print("Warning: Received NACK. Frame might have been too large or corrupted.")
+                    err_code = ser.read(1)
+                    if err_code:
+                        if err_code[0] == 0xE1:
+                            print("Warning: Received NACK. Error: M5Stack buffer allocation failed (NULL).")
+                        elif err_code[0] == 0xE2:
+                            print("Warning: Received NACK. Error: Frame size exceeds device buffer limit.")
+                        elif err_code[0] == 0xE3:
+                            print("Warning: Received NACK. Error: Device serial read timeout.")
+                        else:
+                            print(f"Warning: Received NACK with unknown error code: {err_code}")
+                    else:
+                        print("Warning: Received NACK without error code.")
                 else:
                     print(f"Warning: Unexpected response from M5Stack: {ack}")
                     
