@@ -10,8 +10,8 @@ void setup() {
   auto cfg = M5.config();
   M5.begin(cfg);
 
-  // Set rotation if needed (Default should be correct for landscape)
-  M5.Display.setRotation(0);
+  // Set rotation to 1 (Landscape) so the 1280x720 frame fits correctly
+  M5.Display.setRotation(1);
   M5.Display.clear(TFT_BLACK);
 
   // 1st priority: Try to allocate in PSRAM (SPIRAM) which has plenty of space
