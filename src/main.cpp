@@ -14,11 +14,8 @@ void setup() {
   M5.Display.setRotation(0);
   M5.Display.clear(TFT_BLACK);
 
-  // Allocate in PSRAM if available, otherwise SRAM
-  jpegBuffer = (uint8_t*)heap_caps_malloc(BUFFER_SIZE, MALLOC_CAP_SPIRAM);
-  if (!jpegBuffer) {
-    jpegBuffer = (uint8_t*)malloc(BUFFER_SIZE);
-  }
+  // Use standard SRAM allocation for reliability (avoid PSRAM cache issues)
+  jpegBuffer = (uint8_t*)malloc(BUFFER_SIZE);
 
   // Native USB-CDC CDC-ACM ignores baudrate, but set high for compatibility
   Serial.begin(115200);
@@ -63,6 +60,7 @@ void loop() {
     Serial.write(0x15);
     Serial.flush();
     headerIndex = 0;
+    while (Serial.available() > 0) { Serial.read(); }
     return;
   }
 
@@ -75,6 +73,7 @@ void loop() {
       Serial.write(0x15); // NACK
       Serial.flush();
       headerIndex = 0;
+      while (Serial.available() > 0) { Serial.read(); }
       return;
     }
     bytesRead += chunk;
@@ -88,6 +87,11 @@ void loop() {
   // 5. Send ACK (0x06) to host to signal readiness for the next frame
   Serial.write(0x06);
   Serial.flush();
+
+  // Clear serial buffer to ensure we start reading next frame from sync header cleanly
+  while (Serial.available() > 0) {
+    Serial.read();
+  }
 
   // Ready for next frame
   headerIndex = 0;
