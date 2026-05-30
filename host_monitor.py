@@ -52,13 +52,13 @@ def capture_thread_func(args):
     WIDTH, HEIGHT = 1280, 720
     frame_interval = 1.0 / args.fps
     
+    use_turbojpeg = True
     try:
         jpeg = TurboJPEG()
     except Exception as e:
-        logger.error(f"Failed to initialize TurboJPEG: {e}")
-        logger.error("Please install libturbojpeg (e.g., 'sudo apt-get install libturbojpeg0-dev')")
-        capture_running = False
-        return
+        logger.warning(f"Failed to initialize TurboJPEG: {e}")
+        logger.warning("Falling back to OpenCV JPEG encoder (slower but works without libturbojpeg)")
+        use_turbojpeg = False
 
     with mss.mss() as sct:
         # Get primary monitor info
@@ -83,9 +83,13 @@ def capture_thread_func(args):
             if img.shape[2] == 4:
                 img = img[:, :, :3]
 
-            # 4. Compress to JPEG using highly optimized PyTurboJPEG
+            # 4. Compress to JPEG using highly optimized PyTurboJPEG or fallback to OpenCV
             try:
-                jpeg_data = jpeg.encode(img, quality=args.quality, pixel_format=TJPF_BGR)
+                if use_turbojpeg:
+                    jpeg_data = jpeg.encode(img, quality=args.quality, pixel_format=TJPF_BGR)
+                else:
+                    _, jpeg_data_arr = cv2.imencode('.jpg', img, [int(cv2.IMWRITE_JPEG_QUALITY), args.quality])
+                    jpeg_data = jpeg_data_arr.tobytes()
             except Exception as e:
                 logger.error(f"Failed to encode JPEG frame: {e}")
                 continue

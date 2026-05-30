@@ -17,7 +17,7 @@ fi
 echo "Activating virtual environment and installing/updating dependencies..."
 source "$VENV_DIR/bin/activate"
 pip install --upgrade pip
-pip install mss pillow pyserial
+pip install mss pillow pyserial opencv-python PyTurboJPEG
 
 # 3. Run the host monitor script, passing all command line arguments
 echo "Starting Host Monitor..."

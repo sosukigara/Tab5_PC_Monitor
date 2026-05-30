@@ -5,3 +5,5 @@
 .vscode/ipch
 compile_commands.json
 __pycache__/
+.venv/
+*.log
