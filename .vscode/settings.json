@@ -1,0 +1,11 @@
+{
+    "clangd.arguments": [
+        "--header-insertion=never",
+        "--clang-tidy",
+        "--completion-style=detailed",
+        "--function-arg-placeholders",
+        "--fallback-style=LLVM",
+        "--compile-commands-dir=c:/Develop/M5_stack_monitor/M5Stack_Tab5_writer_platformio/.cache/clangd",
+        "--query-driver=C:/Users/sousu/.platformio/packages/toolchain-*/bin/*,C:/Users/sousu/.platformio/packages/tool-*/bin/*"
+    ]
+}
