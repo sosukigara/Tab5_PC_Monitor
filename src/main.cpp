@@ -38,6 +38,9 @@ void setup() {
 }
 
 void loop() {
+  // Trace: Device is ready and waiting for host
+  Serial.println("D:READY");
+
   // 1. Wait for sync header (0xAA, 0xBB, 0xCC, 0xDD)
   static const uint8_t SYNC_HEADER[] = {0xAA, 0xBB, 0xCC, 0xDD};
   uint8_t headerIndex = 0;

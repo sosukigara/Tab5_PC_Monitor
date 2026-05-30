@@ -46,10 +46,7 @@ def main():
         sys.exit(1)
         
     print("Serial port opened successfully.")
-    print("Waiting 2.0 seconds for M5Stack to boot up...")
-    time.sleep(2.0)
-    ser.reset_input_buffer()
-    ser.reset_output_buffer()
+    print("Waiting for M5Stack to boot and send D:READY signal...")
     
     # Target resolution for M5Stack Tab5-P4
     WIDTH, HEIGHT = 1280, 720
@@ -68,12 +65,26 @@ def main():
         
         try:
             while True:
+                # Wait for D:READY from device before starting next frame
+                ready = False
+                # Try reading until we hit the ready signal, to clear out garbage or catch traces
+                while not ready:
+                    line = ser.readline().decode('ascii', errors='ignore').strip()
+                    if line == "D:READY":
+                        ready = True
+                    elif line.startswith("D:"):
+                        print(f"Device Trace: {line}")
+
                 now = time.time()
                 elapsed = now - last_frame_time
                 if elapsed < frame_interval:
                     time.sleep(frame_interval - elapsed)
                 last_frame_time = time.time()
                 
+                # Clear any lingering data right before sending
+                ser.reset_input_buffer()
+                ser.reset_output_buffer()
+
                 # 1. Capture screen
                 screenshot = sct.grab(monitor)
                 
