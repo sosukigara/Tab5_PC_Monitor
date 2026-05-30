@@ -1,123 +1,92 @@
 #include <Arduino.h>
 #include <M5Unified.h>
 
-const int NUM_TABS = 6; // 0..5
-String tabContent[NUM_TABS];
-int currentTab = 0;
-
-int parseTabToken(String s) {
-  s.trim();
-  s.toUpperCase();
-  if (s.startsWith("TAB")) {
-    String rest = s.substring(3);
-    if (rest.startsWith("_")) rest = rest.substring(1);
-    int n = rest.toInt();
-    return n;
-  }
-  return -1;
-}
-
-void drawTabs();
-void drawTabContent(int tab);
+// Allocate a buffer in SRAM or PSRAM for the incoming JPEG image
+// 256KB is plenty for a compressed 1280x720 JPEG frame
+static const uint32_t BUFFER_SIZE = 256 * 1024;
+uint8_t* jpegBuffer = nullptr;
 
 void setup() {
-  M5.begin();
+  auto cfg = M5.config();
+  M5.begin(cfg);
+
+  // Set rotation if needed (Default should be correct for landscape)
+  M5.Display.setRotation(0);
+  M5.Display.clear(TFT_BLACK);
+
+  // Use PSRAM if available, otherwise fallback to SRAM
+  if (psramInit()) {
+    jpegBuffer = (uint8_t*)ps_malloc(BUFFER_SIZE);
+  }
+  if (!jpegBuffer) {
+    jpegBuffer = (uint8_t*)malloc(BUFFER_SIZE);
+  }
+
+  // Native USB-CDC CDC-ACM ignores baudrate, but set high for compatibility
   Serial.begin(115200);
-  M5.Display.clear();
+  Serial.setTimeout(1000); // 1 second read timeout
+
   M5.Display.setTextSize(2);
-  for (int i = 0; i < NUM_TABS; ++i) tabContent[i] = "(empty)";
-  drawTabs();
-  drawTabContent(currentTab);
-  Serial.println("M5Stack Tab writer ready. Send lines like: TAB_5:Hello world");
+  M5.Display.setTextColor(TFT_GREEN);
+  M5.Display.setCursor(10, 10);
+  M5.Display.println("M5Stack Linux Monitor Ready");
+  M5.Display.printf("Width: %d, Height: %d\n", M5.Display.width(), M5.Display.height());
+  M5.Display.println("Waiting for host stream...");
 }
 
 void loop() {
-  M5.update();
+  // 1. Wait for sync header (0xAA, 0xBB, 0xCC, 0xDD)
+  static const uint8_t SYNC_HEADER[] = {0xAA, 0xBB, 0xCC, 0xDD};
+  uint8_t headerIndex = 0;
 
-  if (M5.BtnA.wasPressed()) {
-    currentTab = (currentTab > 0) ? (currentTab - 1) : 0;
-    drawTabs();
-    drawTabContent(currentTab);
-  }
-  if (M5.BtnC.wasPressed()) {
-    currentTab = (currentTab + 1 < NUM_TABS) ? (currentTab + 1) : (NUM_TABS - 1);
-    drawTabs();
-    drawTabContent(currentTab);
-  }
-
-  auto td = M5.Touch.getDetail();
-  if (td.isPressed() && td.y < 40) {
-      int w = M5.Display.width();
-      int tabw = w / NUM_TABS;
-      int t = td.x / tabw;
-      t = (t < 0) ? 0 : (t >= NUM_TABS ? NUM_TABS - 1 : t);
-      if (t != currentTab) {
-        currentTab = t;
-        drawTabs();
-        drawTabContent(currentTab);
-      }
-  }
-
-  if (Serial.available()) {
-    String line = Serial.readStringUntil('\n');
-    line.trim();
-    if (line.length() == 0) return;
-    int colon = line.indexOf(':');
-    if (colon <= 0) {
-      Serial.println("ERR: bad format. Use TAB_5:your text");
-    } else {
-      String left = line.substring(0, colon);
-      String msg = line.substring(colon + 1);
-      left.trim(); msg.trim();
-      int tab = parseTabToken(left);
-      if (tab >= 0 && tab < NUM_TABS) {
-        tabContent[tab] = msg;
-        if (tab == currentTab) drawTabContent(tab);
-        Serial.println("OK");
+  while (headerIndex < 4) {
+    if (Serial.available()) {
+      uint8_t c = Serial.read();
+      if (c == SYNC_HEADER[headerIndex]) {
+        headerIndex++;
       } else {
-        Serial.println("ERR: tab out of range");
+        // Reset sync state if mismatch, check if it matches first byte of header
+        headerIndex = (c == SYNC_HEADER[0]) ? 1 : 0;
       }
     }
   }
-}
 
-void drawTabs() {
-  M5.Display.fillRect(0, 0, M5.Display.width(), 40, TFT_NAVY);
-  int w = M5.Display.width();
-  int tabw = w / NUM_TABS;
-  for (int i = 0; i < NUM_TABS; ++i) {
-    int x = i * tabw;
-    uint32_t color = (i == currentTab) ? TFT_ORANGE : TFT_LIGHTGREY;
-    M5.Display.fillRect(x + 1, 1, tabw - 2, 38, color);
-    M5.Display.setTextColor(TFT_BLACK, color);
-    M5.Display.setCursor(x + 6, 10);
-    M5.Display.printf("TAB_%d", i);
+  // 2. Read 4-byte payload size (Big-Endian)
+  uint8_t sizeBytes[4];
+  if (Serial.readBytes(sizeBytes, 4) != 4) {
+    return; // Timeout or read failure
   }
-}
 
-void drawTabContent(int tab) {
-  M5.Display.fillRect(0, 40, M5.Display.width(), M5.Display.height() - 40, TFT_WHITE);
-  M5.Display.setTextColor(TFT_BLACK, TFT_WHITE);
-  M5.Display.setCursor(10, 60);
-  M5.Display.setTextSize(2);
-  M5.Display.printf("Tab %d", tab);
-  M5.Display.setCursor(10, 90);
-  M5.Display.setTextSize(2);
-  String s = tabContent[tab];
-  int lineY = 90;
-  int maxWidth = M5.Display.width() - 20;
-  String cur = "";
-  for (int i = 0; i < s.length(); ++i) {
-    cur += s[i];
-    if (M5.Display.textWidth(cur) > maxWidth) {
-      M5.Display.setCursor(10, lineY);
-      M5.Display.print(cur.substring(0, cur.length() - 1));
-      lineY += 24;
-      cur = String(s[i]);
+  uint32_t payloadSize = ((uint32_t)sizeBytes[0] << 24) |
+                         ((uint32_t)sizeBytes[1] << 16) |
+                         ((uint32_t)sizeBytes[2] << 8)  |
+                         (uint32_t)sizeBytes[3];
+
+  // Validate payload size
+  if (payloadSize == 0 || payloadSize > BUFFER_SIZE) {
+    // Write NACK (0x15) to notify the host of an error
+    Serial.write(0x15);
+    return;
+  }
+
+  // 3. Read JPEG payload bytes
+  uint32_t bytesRead = 0;
+  while (bytesRead < payloadSize) {
+    size_t chunk = Serial.readBytes(jpegBuffer + bytesRead, payloadSize - bytesRead);
+    if (chunk == 0) {
+      // Timeout occurred
+      Serial.write(0x15); // NACK
+      return;
     }
+    bytesRead += chunk;
   }
-  if (cur.length()) {
-    M5.Display.setCursor(10, lineY);
-    M5.Display.print(cur);
-  }
+
+  // 4. Draw JPEG to screen
+  // ESP32-P4 and M5GFX will hardware/software decode JPEG very fast
+  M5.Display.startWrite();
+  M5.Display.drawJpg(jpegBuffer, payloadSize, 0, 0);
+  M5.Display.endWrite();
+
+  // 5. Send ACK (0x06) to host to signal readiness for the next frame
+  Serial.write(0x06);
 }
