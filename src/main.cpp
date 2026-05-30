@@ -25,27 +25,25 @@ void setup() {
 void loop() {
   // 1. Wait for sync header (0xAA, 0xBB, 0xCC, 0xDD)
   static const uint8_t SYNC_HEADER[] = {0xAA, 0xBB, 0xCC, 0xDD};
-  static uint8_t headerIndex = 0;
+  uint8_t headerIndex = 0;
 
-  if (headerIndex < 4) {
-    while (Serial.available()) {
+  while (headerIndex < 4) {
+    if (Serial.available()) {
       uint8_t c = Serial.read();
       if (c == SYNC_HEADER[headerIndex]) {
         headerIndex++;
-        if (headerIndex == 4) break;
       } else {
         headerIndex = (c == SYNC_HEADER[0]) ? 1 : 0;
       }
-    }
-    if (headerIndex < 4) {
-      return; // Yield to Arduino loop
+    } else {
+      // Yield to prevent Watchdog Timeout while waiting for host
+      delay(1);
     }
   }
 
   // 2. Read 4-byte payload size (Big-Endian)
   uint8_t sizeBytes[4];
   if (Serial.readBytes(sizeBytes, 4) != 4) {
-    headerIndex = 0; // Reset state
     return; // Timeout or read failure
   }
 
@@ -59,7 +57,6 @@ void loop() {
     // Write NACK (0x15) to notify the host of an error
     Serial.write(0x15);
     Serial.flush();
-    headerIndex = 0;
     while (Serial.available() > 0) { Serial.read(); }
     return;
   }
@@ -72,7 +69,6 @@ void loop() {
       // Timeout occurred
       Serial.write(0x15); // NACK
       Serial.flush();
-      headerIndex = 0;
       while (Serial.available() > 0) { Serial.read(); }
       return;
     }
@@ -92,7 +88,4 @@ void loop() {
   while (Serial.available() > 0) {
     Serial.read();
   }
-
-  // Ready for next frame
-  headerIndex = 0;
 }
