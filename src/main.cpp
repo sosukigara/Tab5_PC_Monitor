@@ -14,41 +14,27 @@ void setup() {
   M5.Display.setRotation(0);
   M5.Display.clear(TFT_BLACK);
 
-  // Use standard SRAM allocation for reliability (avoid PSRAM cache issues)
-  jpegBuffer = (uint8_t*)malloc(BUFFER_SIZE);
+  // Try to allocate in internal SRAM explicitly
+  jpegBuffer = (uint8_t*)heap_caps_malloc(BUFFER_SIZE, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  if (!jpegBuffer) {
+    // Fallback: The ESP32-P4 has 500KB internal SRAM, but continuous blocks might be fragmented.
+    // Try allocating a smaller buffer (128KB) or use PSRAM if absolutely necessary.
+    jpegBuffer = (uint8_t*)malloc(128 * 1024);
+  }
+
+  if (!jpegBuffer) {
+    M5.Display.setTextSize(2);
+    M5.Display.setTextColor(TFT_RED);
+    M5.Display.println("Fatal: Buffer allocation failed!");
+    while(1) { delay(100); }
+  }
 
   // Native USB-CDC CDC-ACM ignores baudrate, but set high for compatibility
   Serial.begin(115200);
   Serial.setTimeout(1000); // 1 second read timeout
-
-  M5.Display.setTextSize(2);
-  M5.Display.setTextColor(TFT_GREEN, TFT_BLACK);
-  M5.Display.setCursor(10, 10);
-  M5.Display.println("M5Stack Linux Monitor Ready");
-  M5.Display.printf("Width: %d, Height: %d\n", M5.Display.width(), M5.Display.height());
-  M5.Display.println("Waiting for host stream...");
 }
 
 void loop() {
-  static uint32_t totalBytes = 0;
-  static uint32_t lastPrintTime = 0;
-  static uint32_t syncCount = 0;
-  static uint32_t lastFrameSize = 0;
-  static uint32_t successFrames = 0;
-  static uint32_t errorFrames = 0;
-
-  uint32_t nowMs = millis();
-  if (nowMs - lastPrintTime >= 1000) {
-    M5.Display.setCursor(10, 100);
-    M5.Display.printf("Rx Bytes/sec: %u      \n", totalBytes);
-    M5.Display.setCursor(10, 130);
-    M5.Display.printf("Syncs: %u, Last Sz: %u  \n", syncCount, lastFrameSize);
-    M5.Display.setCursor(10, 160);
-    M5.Display.printf("OK/Err Frames: %u / %u  \n", successFrames, errorFrames);
-    totalBytes = 0;
-    lastPrintTime = nowMs;
-  }
-
   // 1. Wait for sync header (0xAA, 0xBB, 0xCC, 0xDD)
   static const uint8_t SYNC_HEADER[] = {0xAA, 0xBB, 0xCC, 0xDD};
   uint8_t headerIndex = 0;
@@ -56,37 +42,33 @@ void loop() {
   while (headerIndex < 4) {
     if (Serial.available()) {
       uint8_t c = Serial.read();
-      totalBytes++;
       if (c == SYNC_HEADER[headerIndex]) {
         headerIndex++;
       } else {
         headerIndex = (c == SYNC_HEADER[0]) ? 1 : 0;
       }
+    } else {
+      // Yield to prevent Watchdog Timeout while waiting for host
+      delay(1);
     }
   }
-  syncCount++;
 
   // 2. Read 4-byte payload size (Big-Endian)
   uint8_t sizeBytes[4];
   if (Serial.readBytes(sizeBytes, 4) != 4) {
-    errorFrames++;
     return; // Timeout or read failure
   }
-  totalBytes += 4;
 
   uint32_t payloadSize = ((uint32_t)sizeBytes[0] << 24) |
                          ((uint32_t)sizeBytes[1] << 16) |
                          ((uint32_t)sizeBytes[2] << 8)  |
                          (uint32_t)sizeBytes[3];
 
-  lastFrameSize = payloadSize;
-
   // Validate payload size
-  if (payloadSize == 0 || payloadSize > BUFFER_SIZE) {
+  if (payloadSize == 0 || payloadSize > BUFFER_SIZE || !jpegBuffer) {
     // Write NACK (0x15) to notify the host of an error
     Serial.write(0x15);
     Serial.flush();
-    errorFrames++;
     while (Serial.available() > 0) { Serial.read(); }
     return;
   }
@@ -99,12 +81,10 @@ void loop() {
       // Timeout occurred
       Serial.write(0x15); // NACK
       Serial.flush();
-      errorFrames++;
       while (Serial.available() > 0) { Serial.read(); }
       return;
     }
     bytesRead += chunk;
-    totalBytes += chunk;
   }
 
   // 4. Draw JPEG to screen
@@ -112,10 +92,12 @@ void loop() {
   M5.Display.drawJpg(jpegBuffer, payloadSize, 0, 0);
   M5.Display.endWrite();
 
+  // Wait for DMA / display update to complete before allowing new data
+  M5.Display.waitDisplay();
+
   // 5. Send ACK (0x06) to host to signal readiness for the next frame
   Serial.write(0x06);
   Serial.flush();
-  successFrames++;
 
   // Clear serial buffer to ensure we start reading next frame from sync header cleanly
   while (Serial.available() > 0) {
