@@ -14,8 +14,20 @@ void setup() {
   M5.Display.setRotation(0);
   M5.Display.clear(TFT_BLACK);
 
-  // Use standard SRAM allocation for reliability (avoid PSRAM cache issues)
-  jpegBuffer = (uint8_t*)malloc(BUFFER_SIZE);
+  // Try to allocate in internal SRAM explicitly
+  jpegBuffer = (uint8_t*)heap_caps_malloc(BUFFER_SIZE, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  if (!jpegBuffer) {
+    // Fallback: The ESP32-P4 has 500KB internal SRAM, but continuous blocks might be fragmented.
+    // Try allocating a smaller buffer (128KB) or use PSRAM if absolutely necessary.
+    jpegBuffer = (uint8_t*)malloc(128 * 1024);
+  }
+
+  if (!jpegBuffer) {
+    M5.Display.setTextSize(2);
+    M5.Display.setTextColor(TFT_RED);
+    M5.Display.println("Fatal: Buffer allocation failed!");
+    while(1) { delay(100); }
+  }
 
   // Native USB-CDC CDC-ACM ignores baudrate, but set high for compatibility
   Serial.begin(115200);
@@ -79,6 +91,9 @@ void loop() {
   M5.Display.startWrite();
   M5.Display.drawJpg(jpegBuffer, payloadSize, 0, 0);
   M5.Display.endWrite();
+
+  // Wait for DMA / display update to complete before allowing new data
+  M5.Display.waitDisplay();
 
   // 5. Send ACK (0x06) to host to signal readiness for the next frame
   Serial.write(0x06);
