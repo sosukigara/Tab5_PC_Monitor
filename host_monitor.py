@@ -35,8 +35,8 @@ def main():
             
     print(f"Connecting to M5Stack on port: {port}...")
     try:
-        # Timeout is set to 1.0s to avoid hanging if ACK is lost
-        ser = serial.Serial(port, baudrate=115200, timeout=1.0)
+        # Timeout is set to 5.0s to avoid hanging if ACK is lost or device is slow
+        ser = serial.Serial(port, baudrate=115200, timeout=5.0)
         # Standard configuration to enable communication on ESP32 USB-CDC
         ser.dtr = True
         ser.rts = True
@@ -91,6 +91,7 @@ def main():
                 
                 # 5. Build packet
                 size = len(jpeg_data)
+                print(f"Sending frame: size={size} bytes")
                 size_bytes = size.to_bytes(4, byteorder="big")
                 
                 # 6. Send packet
